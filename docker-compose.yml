@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+    redis:
+        image: redis
+        command: redis-server
+        container_name: redis
+        ports:
+            - "6379:6379"
+        volumes:
+            - $PWD/redis-data:/var/lib/redis
+            - $PWD/redis.conf:/usr/local/etc/redis/redis.conf
+        networks:
+            - chat_network
+        environment:
+            - REDIS_REPLICATION_MODE=master
+
+    chat:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        image: chat
+        container_name: chat
+        command: /bin/bash
+        tty: true
+        volumes:
+            - .:/chat
+        ports:
+            - "8888:8888"
+        depends_on:
+            - redis
+        external_links:
+            - redis
+        networks:
+            - chat_network
+
+networks:
+    chat_network:
+        driver: bridge        
