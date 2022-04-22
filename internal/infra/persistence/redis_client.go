@@ -1,91 +1,105 @@
 package persistence
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/RediSearch/redisearch-go/redisearch"
+	"github.com/go-redis/redis/v8"
+	redigo "github.com/gomodule/redigo/redis"
+	"github.com/nitishm/go-rejson/v4"
+)
+
+const (
+	KEEP_TTL = time.Duration(-1)
 )
 
 type redisClient struct {
-	network string //"tcp"
-	address string //"redis:6379"
-	options []redis.DialOption
+	address  string //"localhost:6379"
+	password string
 
-	conn      redis.Conn
-	connected bool
+	client       *redis.Client
+	jsonHandler  *rejson.Handler
+	searchClient *redisearch.Client
 }
 
-func NewRedisClient(network string, address string, options ...redis.DialOption) KeyValueDBClient {
+func NewRedisClient(address string, password string) KeyValueDBClient {
+	c := &redisClient{
+		address:  address,
+		password: password,
+	}
+	c.jsonHandler = rejson.NewReJSONHandler()
+	cli := redis.NewClient(&redis.Options{Addr: address})
+	c.jsonHandler.SetGoRedisClient(cli)
 
-	return &redisClient{
-		network: network,
-		address: address,
-		options: options}
+	// Create a client. By default a client is schemaless
+	// unless a schema is provided when creating the index
+	c.searchClient = redisearch.NewClient(address, "myIndex")
+
+	return c
 }
 
-func (r *redisClient) Connect() error {
-	conn, err := redis.Dial(r.network, r.address)
+func (r *redisClient) JSONSet(key string, path string, obj interface{}) error {
+
+	if path == "" {
+		path = "."
+	}
+
+	res, err := r.jsonHandler.JSONSet(key, ".", obj)
 	if err != nil {
 		return err
 	}
-	r.conn = conn
+
+	if res.(string) != "OK" {
+		return errors.New("failed to set")
+	}
+
 	return nil
 }
 
-func (r *redisClient) Close() {
-	r.conn.Close()
-}
+func (r *redisClient) JSONGet(key string, path string, obj interface{}) error {
 
-func (r *redisClient) Set(key string, value []byte, expireInSec int) error {
-
-	if err := r.Connect(); err != nil {
-		return err
+	if path == "" {
+		path = "."
 	}
-	defer r.conn.Close()
 
-	_, err := r.conn.Do("SET", key, []byte(value))
+	dataJSON, err := redigo.Bytes(r.jsonHandler.JSONGet(key, "."))
 	if err != nil {
 		return err
 	}
 
-	if expireInSec > 0 {
-		r.conn.Do("EXPIRE", key, expireInSec)
-	}
-
+	err = json.Unmarshal(dataJSON, obj)
 	return err
 }
 
-func (r *redisClient) Get(key string) ([]byte, error) {
-
-	var data []byte
-
-	if err := r.Connect(); err != nil {
-		return data, err
-	}
-	defer r.conn.Close()
-
-	data, err := redis.Bytes(r.conn.Do("GET", key))
-	if err != nil && !errors.Is(err, redis.ErrNil) {
-		return data, err
-	}
-
-	return data, nil
+func (r *redisClient) Close() error {
+	return r.client.Close()
 }
 
-func (r *redisClient) Flush(key string) ([]byte, error) {
+func (r *redisClient) FlushAll(ctx context.Context) error {
+	statusCmd := r.client.FlushAll(ctx)
+	return statusCmd.Err()
+}
 
-	var data []byte
+func (r *redisClient) Set(ctx context.Context, key string, value string, expiration time.Duration) error {
+	statusCmd := r.client.Set(ctx, key, value, expiration)
+	return statusCmd.Err()
+}
 
-	if err := r.Connect(); err != nil {
-		return data, err
+func (r *redisClient) Get(ctx context.Context, key string) (string, error) {
+	stringCmd := r.client.Get(ctx, key)
+	if stringCmd == nil {
+		return "", nil
 	}
+	return stringCmd.Result()
+}
 
-	defer r.conn.Close()
+func (r *redisClient) Scan(ctx context.Context, cursor uint64, match string, count int64) ([]string, uint64, error) {
+	return r.client.Scan(ctx, cursor, match, count).Result()
+}
 
-	data, err := redis.Bytes(r.conn.Do("DEL", key))
-	if err != nil {
-		return data, err
-	}
-
-	return data, nil
+func (r *redisClient) HScan(ctx context.Context, key string, cursor uint64, match string, count int64) ([]string, uint64, error) {
+	return r.client.HScan(ctx, key, cursor, match, count).Result()
 }

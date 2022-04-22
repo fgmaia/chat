@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
     redis:
-        image: redis
+        image: redislabs/redismod
         command: redis-server
         container_name: redis
         ports:
